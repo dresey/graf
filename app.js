@@ -1,6 +1,7 @@
 (() => {
   const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   const VENUES = [{ key: 'light', name: 'Лайт', mark: 'mark-light' }, { key: 'light2', name: 'Лайт 2', mark: 'mark-light2' }, { key: 'atmos', name: 'Атмосфера', mark: 'mark-atmos' }];
+  const EMPLOYEES = ['Кирилл', 'Рома', 'РомаДж', 'Тимур', 'Никита', 'Леван', 'Собир', 'Максим'];
   const STORAGE_KEY = 'grafik-scheduler-v1';
   const today = new Date();
   const initialMonday = mondayOf(today);
@@ -13,8 +14,8 @@
   function shiftDate(date, amount) { const d = new Date(date); d.setDate(d.getDate() + amount); return d; }
   function formatDate(date, options = { day: 'numeric', month: 'short' }) { return new Intl.DateTimeFormat('ru-RU', options).format(date).replace(' г.', ''); }
   function makeWeek() { const availability = {}; for (let i = 0; i < 8; i++) availability[i] = Array(7).fill(false); return { availability, schedule: null, history: Array.from({ length: 8 }, () => ({ shifts: 0, value: 0, support: 0 })) }; }
-  function defaultState() { return { employees: ['Анна', 'Мария', 'Алексей', 'Ирина', 'Дмитрий', 'Екатерина', 'Сергей', 'Ольга'], weeks: {}, history: {} }; }
-  function loadState() { try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.employees) && saved.employees.length === 8) return { ...defaultState(), ...saved }; } catch (_) {} return defaultState(); }
+  function defaultState() { return { employees: [...EMPLOYEES], rosterVersion: 1, weeks: {}, history: {} }; }
+  function loadState() { try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.employees) && saved.employees.length === 8) return { ...defaultState(), ...saved, employees: saved.rosterVersion === 1 ? saved.employees : [...EMPLOYEES], rosterVersion: 1 }; } catch (_) {} return defaultState(); }
   function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   function weekKey(start) { return dateKey(start); }
   function getWeek(start) { const key = weekKey(start); if (!state.weeks[key]) state.weeks[key] = makeWeek(); return state.weeks[key]; }
@@ -178,6 +179,7 @@
     if (names.some(name => !name)) { showToast('Заполните имена всех восьми сотрудников.'); return; }
     if (new Set(names.map(name => name.toLocaleLowerCase('ru-RU'))).size !== names.length) { showToast('Имена сотрудников должны различаться.'); return; }
     state.employees = names;
+    state.rosterVersion = 1;
     Object.values(state.weeks).forEach(week => { if (week.schedule) week.schedule.approved = false; });
     persist(); closeSettings(); render(); showToast('Состав команды обновлён.');
   }
