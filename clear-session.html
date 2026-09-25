@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Очистка сессии — График</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      padding: 30px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+    button:hover {
+      background: #1d4ed8;
+    }
+    .success {
+      color: #059669;
+      font-weight: 600;
+      margin-top: 15px;
+    }
+    code {
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: 'Courier New', monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔧 Очистка сессии</h1>
+    <p>Если форма входа не появляется, возможно в браузере остался старый токен.</p>
+    <p>Нажми кнопку ниже, чтобы очистить сохранённые данные:</p>
+    
+    <button onclick="clearSession()">Очистить сессию и перезагрузить</button>
+    
+    <div id="result"></div>
+    
+    <hr style="margin: 30px 0; border: none; border-top: 1px solid #e5e7eb;">
+    
+    <h3>Альтернативный способ:</h3>
+    <p>Открой консоль браузера (F12) и выполни:</p>
+    <code>sessionStorage.clear(); location.reload();</code>
+  </div>
+  
+  <script>
+    function clearSession() {
+      try {
+        const sessionKey = 'grafik-api-session';
+        const hadToken = sessionStorage.getItem(sessionKey);
+        
+        sessionStorage.removeItem(sessionKey);
+        sessionStorage.clear();
+        
+        document.getElementById('result').innerHTML = `
+          <div class="success">
+            ✅ Сессия очищена!<br>
+            ${hadToken ? 'Старый токен удалён.' : 'Токен не был сохранён.'}<br>
+            Перезагрузка через 2 секунды...
+          </div>
+        `;
+        
+        setTimeout(() => {
+          window.location.href = '/';
+        }, 2000);
+      } catch (e) {
+        document.getElementById('result').innerHTML = `<div style="color: red;">Ошибка: ${e.message}</div>`;
+      }
+    }
+  </script>
+</body>
+</html>

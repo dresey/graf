@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <title>Тест API — График</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      max-width: 800px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f5f5f5;
+    }
+    .card {
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+      margin-bottom: 20px;
+    }
+    button {
+      background: #2563eb;
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin-right: 10px;
+    }
+    button:hover { background: #1d4ed8; }
+    pre {
+      background: #1f2937;
+      color: #f3f4f6;
+      padding: 15px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 13px;
+    }
+    .status { font-weight: 600; margin: 10px 0; }
+    .success { color: #059669; }
+    .error { color: #dc2626; }
+    input { padding: 8px; width: 300px; margin-right: 10px; border: 1px solid #ddd; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🧪 Тест API сервера</h1>
+    <p>Проверка подключения к API-серверу графика</p>
+  </div>
+
+  <div class="card">
+    <h3>1. Проверка health</h3>
+    <button onclick="testHealth()">Проверить /api/health</button>
+    <div id="healthResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>2. Вход (login)</h3>
+    <input type="password" id="passwordInput" placeholder="Введи токен команды" value="GrfK2026-9mX4pL8qWnZ3vB7jR5hT6sN">
+    <button onclick="testLogin()">Войти</button>
+    <div id="loginResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>3. Получение состояния</h3>
+    <button onclick="testState()">Получить /api/state</button>
+    <div id="stateResult"></div>
+  </div>
+
+  <div class="card">
+    <h3>Логи</h3>
+    <pre id="logs">Ожидание тестов...</pre>
+  </div>
+
+  <script src="server-config.js"></script>
+  <script>
+    const API_URL = (window.GRAFIK_API_URL || 'http://localhost:3000').replace(/\/$/, '');
+    let sessionToken = null;
+    let logs = [];
+
+    function log(message) {
+      const timestamp = new Date().toLocaleTimeString('ru-RU');
+      logs.push(`[${timestamp}] ${message}`);
+      document.getElementById('logs').textContent = logs.join('\n');
+    }
+
+    log(`API URL: ${API_URL}`);
+
+    async function testHealth() {
+      const result = document.getElementById('healthResult');
+      result.innerHTML = '<div class="status">Проверяем...</div>';
+      
+      try {
+        log(`Запрос: GET ${API_URL}/api/health`);
+        const response = await fetch(`${API_URL}/api/health`);
+        log(`Ответ: ${response.status} ${response.statusText}`);
+        
+        const data = await response.json();
+        log(`Данные: ${JSON.stringify(data)}`);
+        
+        if (response.ok) {
+          result.innerHTML = `<div class="status success">✅ Сервер работает!</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        } else {
+          result.innerHTML = `<div class="status error">❌ Ошибка ${response.status}</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+      } catch (error) {
+        log(`ОШИБКА: ${error.message}`);
+        result.innerHTML = `<div class="status error">❌ ${error.message}</div>`;
+      }
+    }
+
+    async function testLogin() {
+      const result = document.getElementById('loginResult');
+      const password = document.getElementById('passwordInput').value;
+      result.innerHTML = '<div class="status">Авторизуемся...</div>';
+      
+      try {
+        log(`Запрос: POST ${API_URL}/api/login`);
+        const response = await fetch(`${API_URL}/api/login`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ password })
+        });
+        log(`Ответ: ${response.status} ${response.statusText}`);
+        
+        const data = await response.json();
+        log(`Данные: ${JSON.stringify(data)}`);
+        
+        if (response.ok && data.token) {
+          sessionToken = data.token;
+          result.innerHTML = `<div class="status success">✅ Вход выполнен!</div><pre>Token: ${data.token.substring(0, 20)}...</pre>`;
+        } else {
+          result.innerHTML = `<div class="status error">❌ ${data.error || data.message || 'Ошибка входа'}</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+      } catch (error) {
+        log(`ОШИБКА: ${error.message}`);
+        result.innerHTML = `<div class="status error">❌ ${error.message}</div>`;
+      }
+    }
+
+    async function testState() {
+      const result = document.getElementById('stateResult');
+      
+      if (!sessionToken) {
+        result.innerHTML = '<div class="status error">❌ Сначала выполни вход!</div>';
+        return;
+      }
+      
+      result.innerHTML = '<div class="status">Загружаем состояние...</div>';
+      
+      try {
+        log(`Запрос: GET ${API_URL}/api/state с токеном`);
+        const response = await fetch(`${API_URL}/api/state`, {
+          headers: {
+            'Authorization': `Bearer ${sessionToken}`
+          }
+        });
+        log(`Ответ: ${response.status} ${response.statusText}`);
+        
+        const data = await response.json();
+        log(`Данные получены, ревизия: ${data.revision}`);
+        
+        if (response.ok) {
+          result.innerHTML = `<div class="status success">✅ Данные получены!</div><pre>${JSON.stringify(data, null, 2).substring(0, 500)}...</pre>`;
+        } else {
+          result.innerHTML = `<div class="status error">❌ Ошибка ${response.status}</div><pre>${JSON.stringify(data, null, 2)}</pre>`;
+        }
+      } catch (error) {
+        log(`ОШИБКА: ${error.message}`);
+        result.innerHTML = `<div class="status error">❌ ${error.message}</div>`;
+      }
+    }
+
+    // Проверяем sessionStorage
+    const savedToken = sessionStorage.getItem('grafik-api-session');
+    if (savedToken) {
+      log(`⚠️ В sessionStorage найден токен: ${savedToken.substring(0, 15)}...`);
+      log('Это может мешать показу формы входа!');
+      sessionToken = savedToken;
+    } else {
+      log('✓ SessionStorage пуст');
+    }
+  </script>
+</body>
+</html>

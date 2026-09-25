@@ -1,9 +1,12 @@
 (() => {
+  console.log('[Grafik] ========== APP.JS STARTED ==========');
   const DAYS = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
   const VENUES = [{ key: 'light', name: 'Лайт', mark: 'mark-light' }, { key: 'light2', name: 'Лайт 2', mark: 'mark-light2' }, { key: 'atmos', name: 'Атмосфера', mark: 'mark-atmos' }];
   const EMPLOYEES = ['Кирилл', 'Рома', 'РомаДж', 'Тимур', 'Никита', 'Леван', 'Собир', 'Максим'];
   const STORAGE_KEY = 'grafik-scheduler-v1';
   const API_URL = String(window.GRAFIK_API_URL || '').replace(/\/$/, '');
+  console.log('[Grafik] window.GRAFIK_API_URL:', window.GRAFIK_API_URL);
+  console.log('[Grafik] API_URL after processing:', API_URL);
   const SESSION_KEY = 'grafik-api-session';
   const today = new Date();
   const initialMonday = mondayOf(today);
@@ -15,6 +18,7 @@
   let syncPending = false;
   let syncTimer;
   let remoteReady = !API_URL;
+  console.log('[Grafik] remoteReady initialized to:', remoteReady, '(because API_URL is', API_URL ? 'set' : 'empty', ')');
 
   function mondayOf(date) { const d = new Date(date); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; }
   function dateKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
@@ -62,18 +66,25 @@
   }
 
   function lockApp(message = '') {
+    console.log('[Grafik] lockApp called:', message);
     remoteReady = false;
     clearInterval(syncTimer);
     document.body.classList.add('auth-locked');
-    document.getElementById('loginModal').hidden = false;
+    const modal = document.getElementById('loginModal');
+    console.log('[Grafik] Modal element:', modal, 'hidden before:', modal?.hidden);
+    modal.hidden = false;
+    console.log('[Grafik] Modal hidden after:', modal?.hidden);
     document.getElementById('logoutButton').hidden = true;
     document.getElementById('loginMessage').textContent = message || 'Введите пароль команды, чтобы загрузить общий график.';
     document.getElementById('teamPassword').focus();
   }
 
   async function fetchRemoteState(token) {
+    console.log('[Grafik] fetchRemoteState, token:', token ? token.substring(0, 10) + '...' : 'none');
     const response = await fetch(`${API_URL}/api/state`, { headers: { Authorization: `Bearer ${token}` } });
+    console.log('[Grafik] fetchRemoteState response:', response.status);
     if (response.status === 401) {
+      console.log('[Grafik] Token invalid (401), removing and locking');
       sessionStorage.removeItem(SESSION_KEY);
       lockApp('Сессия завершилась. Введите пароль команды снова.');
       return null;
@@ -83,11 +94,16 @@
   }
 
   async function connectToServer(token) {
+    console.log('[Grafik] connectToServer called');
     const loginMessage = document.getElementById('loginMessage');
     loginMessage.textContent = 'Проверяем подключение и загружаем график…';
+    console.log('[Grafik] Checking API health:', `${API_URL}/api/health`);
     const response = await fetch(`${API_URL}/api/health`);
+    console.log('[Grafik] Health response:', response.status, response.ok);
     if (!response.ok) throw new Error('Сервер графика недоступен.');
+    console.log('[Grafik] Fetching remote state...');
     const remote = await fetchRemoteState(token);
+    console.log('[Grafik] Remote state:', remote);
     if (!remote) throw new Error('Не удалось загрузить общий график.');
     apiRevision = remote.revision;
     if (remote.state) {
@@ -99,6 +115,7 @@
     Object.values(state.weeks).forEach(week => { if (week.schedule) clearDuplicateAssignments(week.schedule); });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     remoteReady = true;
+    console.log('[Grafik] Connected successfully, hiding login modal');
     document.getElementById('loginModal').hidden = true;
     document.body.classList.remove('auth-locked');
     document.getElementById('logoutButton').hidden = false;
@@ -180,7 +197,7 @@
     const schedule = getWeekSchedule(week);
     const filled = VENUES.reduce((sum, venue) => sum + schedule.main[venue.key].filter(value => value !== null && value !== undefined).length, 0);
     const support = schedule.support.filter(value => value !== null && value !== undefined).length;
-    const available = week.availability.reduce((sum, days) => sum + days.filter(Boolean).length, 0);
+    const available = Object.values(week.availability).reduce((sum, days) => sum + days.filter(Boolean).length, 0);
     const totalValue = VENUES.reduce((sum, venue) => sum + schedule.main[venue.key].reduce((venueSum, employee, day) => venueSum + (employee === null || employee === undefined ? 0 : valueFor(venue.key, day)), 0), 0);
     document.getElementById('filledCount').textContent = filled;
     document.getElementById('totalCount').textContent = '/ 21';
@@ -388,11 +405,23 @@
   persist();
   render();
   if (API_URL) {
+    console.log('[Grafik] API URL configured:', API_URL);
     setSyncStatus('Подключение к общему серверу…', false);
     const token = sessionStorage.getItem(SESSION_KEY);
-    if (token) connectToServer(token).catch(() => { sessionStorage.removeItem(SESSION_KEY); lockApp('Введите пароль команды, чтобы загрузить общий график.'); });
-    else lockApp();
+    console.log('[Grafik] Stored token:', token ? 'exists' : 'none');
+    if (token) {
+      console.log('[Grafik] Trying to connect with stored token...');
+      connectToServer(token).catch(error => {
+        console.error('[Grafik] Connection failed:', error);
+        sessionStorage.removeItem(SESSION_KEY);
+        lockApp('Введите пароль команды, чтобы загрузить общий график.');
+      });
+    } else {
+      console.log('[Grafik] No token found, showing login form');
+      lockApp();
+    }
   } else {
+    console.log('[Grafik] No API URL, working offline');
     setSyncStatus('Локальные данные — сервер не подключён', false);
   }
 })();
