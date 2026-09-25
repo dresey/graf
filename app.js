@@ -63,8 +63,10 @@
 
   function lockApp(message = '') {
     remoteReady = false;
+    clearInterval(syncTimer);
     document.body.classList.add('auth-locked');
     document.getElementById('loginModal').hidden = false;
+    document.getElementById('logoutButton').hidden = true;
     document.getElementById('loginMessage').textContent = message || 'Введите пароль команды, чтобы загрузить общий график.';
     document.getElementById('teamPassword').focus();
   }
@@ -99,6 +101,7 @@
     remoteReady = true;
     document.getElementById('loginModal').hidden = true;
     document.body.classList.remove('auth-locked');
+    document.getElementById('logoutButton').hidden = false;
     setSyncStatus('Общий график синхронизирован', true);
     clearInterval(syncTimer);
     syncTimer = setInterval(refreshFromServer, 10000);
@@ -376,6 +379,10 @@
       errorLabel.textContent = error.message || 'Не удалось подключиться к серверу.';
       if (error instanceof TypeError) errorLabel.textContent = 'Сервер недоступен. Проверьте подключение ноутбука и адрес API.';
     } finally { submit.disabled = false; }
+  });
+  document.getElementById('logoutButton').addEventListener('click', () => {
+    sessionStorage.removeItem(SESSION_KEY);
+    lockApp('Введите пароль команды, чтобы открыть общий график.');
   });
   Object.values(state.weeks).forEach(week => { if (week.schedule) clearDuplicateAssignments(week.schedule); });
   persist();
