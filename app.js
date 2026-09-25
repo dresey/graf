@@ -81,16 +81,39 @@
 
   async function fetchRemoteState(token) {
     console.log('[Grafik] fetchRemoteState, token:', token ? token.substring(0, 10) + '...' : 'none');
-    const response = await fetch(`${API_URL}/api/state`, { headers: { Authorization: `Bearer ${token}` } });
-    console.log('[Grafik] fetchRemoteState response:', response.status);
-    if (response.status === 401) {
-      console.log('[Grafik] Token invalid (401), removing and locking');
-      sessionStorage.removeItem(SESSION_KEY);
-      lockApp('Сессия завершилась. Введите пароль команды снова.');
+    
+    // Add timeout protection (15 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
+    
+    try {
+      const response = await fetch(`${API_URL}/api/state`, { 
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
+      console.log('[Grafik] fetchRemoteState response:', response.status);
+      if (response.status === 401) {
+        console.log('[Grafik] Token invalid (401), removing and locking');
+        sessionStorage.removeItem(SESSION_KEY);
+        lockApp('Сессия завершилась. Введите пароль команды снова.');
+        return null;
+      }
+      if (!response.ok) {
+        console.warn('[Grafik] fetchRemoteState: response not ok:', response.status);
+        return null;
+      }
+      return response.json();
+    } catch (error) {
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        console.error('[Grafik] fetchRemoteState: request timeout after 15s');
+      } else {
+        console.error('[Grafik] fetchRemoteState error:', error.message, error);
+      }
       return null;
     }
-    if (!response.ok) return null;
-    return response.json();
   }
 
   async function connectToServer(token) {
@@ -131,9 +154,15 @@
     const token = sessionStorage.getItem(SESSION_KEY);
     if (!API_URL || !remoteReady || !token || syncPending) return;
     try {
+      console.log('[Grafik] refreshFromServer: fetching state');
       const remote = await fetchRemoteState(token);
-      if (!remote) { setSyncStatus('Нет связи с сервером', false); return; }
+      if (!remote) { 
+        console.warn('[Grafik] refreshFromServer: remote returned null');
+        setSyncStatus('Нет связи с сервером', false); 
+        return; 
+      }
       if (remote.revision !== apiRevision && remote.state) {
+        console.log('[Grafik] refreshFromServer: new revision detected, updating state');
         state = remote.state;
         apiRevision = remote.revision;
         localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -141,7 +170,10 @@
         showToast('График обновлён с другого устройства.');
       }
       setSyncStatus('Общий график синхронизирован', true);
-    } catch (_) { setSyncStatus('Нет связи с сервером', false); }
+    } catch (error) { 
+      console.error('[Grafik] refreshFromServer error:', error.message, error); 
+      setSyncStatus('Нет связи с сервером', false); 
+    }
   }
   function weekKey(start) { return dateKey(start); }
   function getWeek(start) { const key = weekKey(start); if (!state.weeks[key]) state.weeks[key] = makeWeek(); return state.weeks[key]; }

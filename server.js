@@ -76,24 +76,53 @@ async function saveStore() {
 
 async function handle(request, response) {
   const origin = request.headers.origin;
+  const url = new URL(request.url, `http://${HOST}:${PORT}`);
+  
+  // Логируем каждый запрос
+  console.log(`[${new Date().toISOString()}] ${request.method} ${url.pathname} | Origin: ${origin || 'none'} | IP: ${request.socket.remoteAddress}`);
+  
   const headers = corsHeaders(origin);
-  if (origin && !ALLOWED_ORIGINS.has(origin)) return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+  
+  // Проверка Origin для всех запросов кроме health
+  if (origin && !ALLOWED_ORIGINS.has(origin) && url.pathname !== '/api/health') {
+    console.warn(`[REJECT] Origin not allowed: ${origin}`);
+    return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+  }
+  
   if (request.method === 'OPTIONS') {
-    if (origin && !ALLOWED_ORIGINS.has(origin)) return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+    if (origin && !ALLOWED_ORIGINS.has(origin)) {
+      console.warn(`[REJECT] OPTIONS Origin not allowed: ${origin}`);
+      return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+    }
+    console.log('[OK] OPTIONS preflight passed');
     response.writeHead(204, headers);
     return response.end();
   }
-  const url = new URL(request.url, `http://${HOST}:${PORT}`);
-  if (request.method === 'GET' && url.pathname === '/api/health') return send(response, 200, { ok: true }, headers);
-  if ((url.pathname === '/api/login' || url.pathname === '/api/state') && !ALLOWED_ORIGINS.has(origin)) return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+  
+  if (request.method === 'GET' && url.pathname === '/api/health') {
+    console.log('[OK] Health check');
+    return send(response, 200, { ok: true }, headers);
+  }
+  
+  if ((url.pathname === '/api/login' || url.pathname === '/api/state') && !ALLOWED_ORIGINS.has(origin)) {
+    console.warn(`[REJECT] API endpoint with bad origin: ${origin}`);
+    return send(response, 403, { error: 'ORIGIN_NOT_ALLOWED' });
+  }
 
   if (request.method === 'POST' && url.pathname === '/api/login') {
+    console.log('[LOGIN] Attempt from IP:', request.socket.remoteAddress);
     const ip = request.socket.remoteAddress || 'unknown';
     const attempts = failedLogins.get(ip) || { count: 0, until: Date.now() + 15 * 60 * 1000 };
     if (attempts.until < Date.now()) { attempts.count = 0; attempts.until = Date.now() + 15 * 60 * 1000; }
-    if (attempts.count >= 8) return send(response, 429, { error: 'TOO_MANY_ATTEMPTS', message: 'Слишком много попыток. Подождите 15 минут.' }, headers);
+    if (attempts.count >= 8) {
+      console.warn('[LOGIN] Too many attempts from', ip);
+      return send(response, 429, { error: 'TOO_MANY_ATTEMPTS', message: 'Слишком много попыток. Подождите 15 минут.' }, headers);
+    }
     let body;
-    try { body = await readBody(request); } catch (error) { return send(response, error.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'INVALID_REQUEST' }, headers); }
+    try { body = await readBody(request); } catch (error) { 
+      console.error('[LOGIN] Body read error:', error.message);
+      return send(response, error.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'INVALID_REQUEST' }, headers); 
+    }
     const supplied = typeof body.password === 'string' ? body.password : '';
     const actualBuffer = Buffer.from(PASSWORD);
     const suppliedBuffer = Buffer.from(supplied);
@@ -101,29 +130,61 @@ async function handle(request, response) {
     if (!PASSWORD || !matches) {
       attempts.count++;
       failedLogins.set(ip, attempts);
+      console.warn('[LOGIN] Invalid password from', ip, '- attempts:', attempts.count);
       return send(response, 401, { error: 'INVALID_PASSWORD', message: 'Неверный пароль команды.' }, headers);
     }
     failedLogins.delete(ip);
     const token = crypto.randomBytes(32).toString('base64url');
     sessions.set(sessionKey(token), { expiresAt: Date.now() + SESSION_MS });
+    console.log('[LOGIN] Success - active sessions:', sessions.size);
     return send(response, 200, { token }, headers);
   }
 
   if (url.pathname.startsWith('/api/')) {
-    if (!getSessionRecord(request)) return send(response, 401, { error: 'UNAUTHORIZED', message: 'Войдите снова.' }, headers);
-    if (request.method === 'GET' && url.pathname === '/api/state') return send(response, 200, store, headers);
+    const session = getSessionRecord(request);
+    if (!session) {
+      console.warn('[AUTH] Unauthorized request to', url.pathname, '- no valid session');
+      return send(response, 401, { error: 'UNAUTHORIZED', message: 'Войдите снова.' }, headers);
+    }
+    console.log('[AUTH] Valid session for', url.pathname, '- expires:', new Date(session.expiresAt).toISOString());
+    
+    if (request.method === 'GET' && url.pathname === '/api/state') {
+      console.log('[GET STATE] Returning revision:', store.revision);
+      return send(response, 200, store, headers);
+    }
+    
     if (request.method === 'PUT' && url.pathname === '/api/state') {
+      console.log('[PUT STATE] Incoming update');
       let body;
-      try { body = await readBody(request); } catch (error) { return send(response, error.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'INVALID_REQUEST' }, headers); }
-      if (!validState(body.state) || !Number.isInteger(body.revision)) return send(response, 400, { error: 'INVALID_STATE' }, headers);
-      if (body.revision !== store.revision) return send(response, 409, { error: 'REVISION_CONFLICT', revision: store.revision, message: 'Данные обновились на другом устройстве. Обновите страницу и повторите изменение.' }, headers);
+      try { body = await readBody(request); } catch (error) { 
+        console.error('[PUT STATE] Body read error:', error.message);
+        return send(response, error.message === 'BODY_TOO_LARGE' ? 413 : 400, { error: 'INVALID_REQUEST' }, headers); 
+      }
+      if (!validState(body.state) || !Number.isInteger(body.revision)) {
+        console.error('[PUT STATE] Invalid state or revision');
+        return send(response, 400, { error: 'INVALID_STATE' }, headers);
+      }
+      if (body.revision !== store.revision) {
+        console.warn('[PUT STATE] Revision conflict - client:', body.revision, 'server:', store.revision);
+        return send(response, 409, { error: 'REVISION_CONFLICT', revision: store.revision, message: 'Данные обновились на другом устройстве. Обновите страницу и повторите изменение.' }, headers);
+      }
       store = { revision: store.revision + 1, state: body.state };
       dirty = true;
-      try { await saveStore(); dirty = false; } catch (error) { console.error('Could not persist shared state:', error); return send(response, 500, { error: 'PERSIST_FAILED', message: 'Не удалось записать базу на диск ноутбука.' }, headers); }
+      console.log('[PUT STATE] Updated to revision:', store.revision);
+      try { 
+        await saveStore(); 
+        dirty = false; 
+        console.log('[PUT STATE] Saved to disk');
+      } catch (error) { 
+        console.error('[PUT STATE] Could not persist shared state:', error); 
+        return send(response, 500, { error: 'PERSIST_FAILED', message: 'Не удалось записать базу на диск ноутбука.' }, headers); 
+      }
       return send(response, 200, { revision: store.revision }, headers);
     }
+    console.warn('[404] Unknown API path:', url.pathname);
     return send(response, 404, { error: 'NOT_FOUND' }, headers);
   }
+  console.warn('[404] Non-API path:', url.pathname);
   return send(response, 404, { error: 'NOT_FOUND' }, headers);
 }
 
