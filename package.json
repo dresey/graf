@@ -1,0 +1,12 @@
+{
+  "name": "grafik-scheduler",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shared scheduling API for the Grafik static website",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

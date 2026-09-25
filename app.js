@@ -3,11 +3,18 @@
   const VENUES = [{ key: 'light', name: 'Лайт', mark: 'mark-light' }, { key: 'light2', name: 'Лайт 2', mark: 'mark-light2' }, { key: 'atmos', name: 'Атмосфера', mark: 'mark-atmos' }];
   const EMPLOYEES = ['Кирилл', 'Рома', 'РомаДж', 'Тимур', 'Никита', 'Леван', 'Собир', 'Максим'];
   const STORAGE_KEY = 'grafik-scheduler-v1';
+  const API_URL = String(window.GRAFIK_API_URL || '').replace(/\/$/, '');
+  const SESSION_KEY = 'grafik-api-session';
   const today = new Date();
   const initialMonday = mondayOf(today);
   let state = loadState();
   let period = 'week';
   let toastTimer;
+  let apiRevision = 0;
+  let syncQueue = Promise.resolve();
+  let syncPending = false;
+  let syncTimer;
+  let remoteReady = !API_URL;
 
   function mondayOf(date) { const d = new Date(date); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); return d; }
   function dateKey(date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
@@ -16,7 +23,106 @@
   function makeWeek() { const availability = {}; for (let i = 0; i < 8; i++) availability[i] = Array(7).fill(false); return { availability, schedule: null, history: Array.from({ length: 8 }, () => ({ shifts: 0, value: 0, support: 0 })) }; }
   function defaultState() { return { employees: [...EMPLOYEES], rosterVersion: 1, weeks: {}, history: {} }; }
   function loadState() { try { const saved = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (saved && Array.isArray(saved.employees) && saved.employees.length === 8) return { ...defaultState(), ...saved, employees: saved.rosterVersion === 1 ? saved.employees : [...EMPLOYEES], rosterVersion: 1 }; } catch (_) {} return defaultState(); }
-  function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function persist() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    if (!API_URL || !remoteReady) return;
+    if (syncPending) {
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => persist(), 250);
+      return;
+    }
+    syncPending = true;
+    const snapshot = JSON.stringify(state);
+    syncQueue = syncQueue.then(() => saveSnapshot(snapshot)).catch(error => {
+      console.error(error); setSyncStatus('Нет связи с сервером', false); showToast(error.message || 'Ошибка синхронизации с сервером.');
+    }).finally(() => { syncPending = false; });
+  }
+
+  async function saveSnapshot(snapshot) {
+    const token = sessionStorage.getItem(SESSION_KEY);
+    if (!token) return;
+    const response = await fetch(`${API_URL}/api/state`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify({ revision: apiRevision, state: JSON.parse(snapshot) }) });
+    if (response.status === 401) { lockApp('Сессия завершилась. Войдите снова.'); return; }
+    if (response.status === 409) {
+      const latest = await fetchRemoteState(token);
+      if (latest && latest.state) { state = latest.state; apiRevision = latest.revision; localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); render(); }
+      showToast('Данные изменились на другом устройстве. Загружена последняя версия; повторите своё изменение.');
+      return;
+    }
+    if (!response.ok) throw new Error('Не удалось сохранить общий график на сервере.');
+    apiRevision = (await response.json()).revision;
+    setSyncStatus('Общий график синхронизирован', true);
+  }
+
+  function setSyncStatus(message, online) {
+    const status = document.getElementById('syncStatus');
+    if (!status) return;
+    status.innerHTML = `<i></i> ${safeText(message)}`;
+    status.classList.toggle('sync-offline', !online);
+  }
+
+  function lockApp(message = '') {
+    remoteReady = false;
+    document.body.classList.add('auth-locked');
+    document.getElementById('loginModal').hidden = false;
+    document.getElementById('loginMessage').textContent = message || 'Введите пароль команды, чтобы загрузить общий график.';
+    document.getElementById('teamPassword').focus();
+  }
+
+  async function fetchRemoteState(token) {
+    const response = await fetch(`${API_URL}/api/state`, { headers: { Authorization: `Bearer ${token}` } });
+    if (response.status === 401) {
+      sessionStorage.removeItem(SESSION_KEY);
+      lockApp('Сессия завершилась. Введите пароль команды снова.');
+      return null;
+    }
+    if (!response.ok) return null;
+    return response.json();
+  }
+
+  async function connectToServer(token) {
+    const loginMessage = document.getElementById('loginMessage');
+    loginMessage.textContent = 'Проверяем подключение и загружаем график…';
+    const response = await fetch(`${API_URL}/api/health`);
+    if (!response.ok) throw new Error('Сервер графика недоступен.');
+    const remote = await fetchRemoteState(token);
+    if (!remote) throw new Error('Не удалось загрузить общий график.');
+    apiRevision = remote.revision;
+    if (remote.state) {
+      state = remote.state;
+    } else {
+      const local = loadState();
+      state = local;
+    }
+    Object.values(state.weeks).forEach(week => { if (week.schedule) clearDuplicateAssignments(week.schedule); });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    remoteReady = true;
+    document.getElementById('loginModal').hidden = true;
+    document.body.classList.remove('auth-locked');
+    setSyncStatus('Общий график синхронизирован', true);
+    clearInterval(syncTimer);
+    syncTimer = setInterval(refreshFromServer, 10000);
+    render();
+    if (!remote.state) persist();
+    loginMessage.textContent = 'Введите пароль команды, чтобы загрузить общий график.';
+  }
+
+  async function refreshFromServer() {
+    const token = sessionStorage.getItem(SESSION_KEY);
+    if (!API_URL || !remoteReady || !token || syncPending) return;
+    try {
+      const remote = await fetchRemoteState(token);
+      if (!remote) { setSyncStatus('Нет связи с сервером', false); return; }
+      if (remote.revision !== apiRevision && remote.state) {
+        state = remote.state;
+        apiRevision = remote.revision;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        render();
+        showToast('График обновлён с другого устройства.');
+      }
+      setSyncStatus('Общий график синхронизирован', true);
+    } catch (_) { setSyncStatus('Нет связи с сервером', false); }
+  }
   function weekKey(start) { return dateKey(start); }
   function getWeek(start) { const key = weekKey(start); if (!state.weeks[key]) state.weeks[key] = makeWeek(); return state.weeks[key]; }
   function currentStart() { return currentDate; }
@@ -121,6 +227,30 @@
 
   function countOpen(schedule) { return 21 - VENUES.reduce((sum, venue) => sum + schedule.main[venue.key].filter(value => value !== null && value !== undefined).length, 0) + 7 - schedule.support.filter(value => value !== null && value !== undefined).length; }
 
+  function hasDuplicateAssignments(schedule) {
+    return DAYS.some((_, day) => {
+      const assignments = VENUES.map(venue => schedule.main[venue.key][day]).concat(schedule.support[day]).filter(employee => employee !== null && employee !== undefined);
+      return new Set(assignments).size !== assignments.length;
+    });
+  }
+
+  function clearDuplicateAssignments(schedule) {
+    DAYS.forEach((_, day) => {
+      const assigned = new Set();
+      VENUES.forEach(venue => {
+        const employee = schedule.main[venue.key][day];
+        if (employee === null || employee === undefined) return;
+        if (assigned.has(employee)) schedule.main[venue.key][day] = null;
+        else assigned.add(employee);
+      });
+      const supportEmployee = schedule.support[day];
+      if (supportEmployee !== null && supportEmployee !== undefined) {
+        if (assigned.has(supportEmployee)) schedule.support[day] = null;
+        else assigned.add(supportEmployee);
+      }
+    });
+  }
+
   function monthlyBase(start, excludeKey) {
     const monthStart = new Date(start.getFullYear(), start.getMonth(), 1);
     const nextMonth = new Date(start.getFullYear(), start.getMonth() + 1, 1);
@@ -158,7 +288,7 @@
           monthly[selected].value += valueFor(venue.key, day);
         }
       }
-      const candidates = state.employees.map((_, employee) => employee).filter(employee => week.availability[employee][day]);
+      const candidates = state.employees.map((_, employee) => employee).filter(employee => week.availability[employee][day] && !assignedToday.has(employee));
       candidates.sort((a, b) => monthly[a].support - monthly[b].support || ((a - day - start.getDate() + 80) % 8) - ((b - day - start.getDate() + 80) % 8));
       if (candidates.length) { support[day] = candidates[0]; monthly[candidates[0]].support++; }
     }
@@ -191,6 +321,7 @@
   document.getElementById('approveButton').addEventListener('click', () => {
     const week = getWeek(currentStart());
     if (!week.schedule) { showToast('Сначала составьте график.'); return; }
+    if (!week.schedule.approved && hasDuplicateAssignments(week.schedule)) { showToast('В графике есть повторные назначения на один день. Составьте график заново.'); return; }
     const open = countOpen(week.schedule);
     if (open && !week.schedule.approved) { showToast(`Нельзя подтвердить: ${open} позиций требуют решения ответственного.`); return; }
     week.schedule.approved = !week.schedule.approved; persist(); render();
@@ -226,6 +357,35 @@
   document.getElementById('saveSettings').addEventListener('click', saveSettings);
   document.getElementById('settingsModal').addEventListener('click', event => { if (event.target.id === 'settingsModal') closeSettings(); });
   document.addEventListener('keydown', event => { if (event.key === 'Escape') closeSettings(); });
+  document.getElementById('loginForm').addEventListener('submit', async event => {
+    event.preventDefault();
+    const errorLabel = document.getElementById('loginError');
+    const submit = event.currentTarget.querySelector('button[type="submit"]');
+    errorLabel.textContent = '';
+    submit.disabled = true;
+    try {
+      const response = await fetch(`${API_URL}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: document.getElementById('teamPassword').value }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.message || 'Не удалось войти.');
+      sessionStorage.setItem(SESSION_KEY, result.token);
+      await connectToServer(result.token);
+      document.getElementById('teamPassword').value = '';
+    } catch (error) {
+      sessionStorage.removeItem(SESSION_KEY);
+      lockApp('Не удалось подключиться. Проверьте пароль, URL API и доступность ноутбука.');
+      errorLabel.textContent = error.message || 'Не удалось подключиться к серверу.';
+      if (error instanceof TypeError) errorLabel.textContent = 'Сервер недоступен. Проверьте подключение ноутбука и адрес API.';
+    } finally { submit.disabled = false; }
+  });
+  Object.values(state.weeks).forEach(week => { if (week.schedule) clearDuplicateAssignments(week.schedule); });
   persist();
   render();
+  if (API_URL) {
+    setSyncStatus('Подключение к общему серверу…', false);
+    const token = sessionStorage.getItem(SESSION_KEY);
+    if (token) connectToServer(token).catch(() => { sessionStorage.removeItem(SESSION_KEY); lockApp('Введите пароль команды, чтобы загрузить общий график.'); });
+    else lockApp();
+  } else {
+    setSyncStatus('Локальные данные — сервер не подключён', false);
+  }
 })();
